@@ -3,71 +3,108 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class HashTable {
 
-    private ConcurrentHashMap<String, Integer> inventory;
-    private ConcurrentHashMap<String, Queue<Integer>> waitingList;
+    class DNSEntry {
+        String domain;
+        String ipAddress;
+        long expiryTime;
 
-    public HashTable() {
-        inventory = new ConcurrentHashMap<>();
-        waitingList = new ConcurrentHashMap<>();
+        DNSEntry(String domain, String ipAddress, long ttlSeconds) {
+            this.domain = domain;
+            this.ipAddress = ipAddress;
+            this.expiryTime = System.currentTimeMillis() + (ttlSeconds * 1000);
+        }
+
+        boolean isExpired() {
+            return System.currentTimeMillis() > expiryTime;
+        }
     }
 
-    public void addProduct(String productId, int stock) {
-        inventory.put(productId, stock);
-        waitingList.put(productId, new LinkedList<>());
-    }
+    private ConcurrentHashMap<String, DNSEntry> cache;
+    private int maxSize;
 
-    public int checkStock(String productId) {
-        return inventory.getOrDefault(productId, 0);
-    }
+    private long hits = 0;
+    private long misses = 0;
+    private long totalLookupTime = 0;
+    private long totalRequests = 0;
 
-    public String purchaseItem(String productId, int userId) {
-        synchronized (productId.intern()) {
-            int stock = inventory.getOrDefault(productId, 0);
+    public HashTable(int maxSize) {
+        this.maxSize = maxSize;
 
-            if (stock > 0) {
-                inventory.put(productId, stock - 1);
-                return "Success, " + (stock - 1) + " units remaining";
-            } else {
-                Queue<Integer> queue = waitingList.get(productId);
-                queue.add(userId);
-                return "Added to waiting list, position #" + queue.size();
+        cache = new ConcurrentHashMap<String, DNSEntry>(16, 0.75f, 1) {
+            protected boolean removeEldestEntry(Map.Entry<String, DNSEntry> eldest) {
+                return size() > HashTable.this.maxSize;
             }
-        }
+        };
+
+        startCleanupThread();
     }
 
-    public void restock(String productId, int quantity) {
-        synchronized (productId.intern()) {
-            int stock = inventory.getOrDefault(productId, 0);
-            stock += quantity;
+    public String resolve(String domain) {
+        long start = System.nanoTime();
+        totalRequests++;
 
-            Queue<Integer> queue = waitingList.get(productId);
+        DNSEntry entry = cache.get(domain);
 
-            while (stock > 0 && !queue.isEmpty()) {
-                int userId = queue.poll();
-                stock--;
-                System.out.println("Allocated to waiting user: " + userId);
+        if (entry != null && !entry.isExpired()) {
+            hits++;
+            totalLookupTime += (System.nanoTime() - start);
+            return "Cache HIT → " + entry.ipAddress;
+        }
+
+        if (entry != null && entry.isExpired()) {
+            cache.remove(domain);
+        }
+
+        misses++;
+
+        String ip = queryUpstreamDNS(domain);
+        cache.put(domain, new DNSEntry(domain, ip, 5));
+
+        totalLookupTime += (System.nanoTime() - start);
+        return "Cache MISS → " + ip;
+    }
+
+    private String queryUpstreamDNS(String domain) {
+        return "192.168." + new Random().nextInt(255) + "." + new Random().nextInt(255);
+    }
+
+    public void startCleanupThread() {
+        Thread cleaner = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(2000);
+                    for (String key : cache.keySet()) {
+                        DNSEntry entry = cache.get(key);
+                        if (entry != null && entry.isExpired()) {
+                            cache.remove(key);
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    break;
+                }
             }
-
-            inventory.put(productId, stock);
-        }
+        });
+        cleaner.setDaemon(true);
+        cleaner.start();
     }
 
-    public static void main(String[] args) {
-        HashTable system = new HashTable();
+    public String getCacheStats() {
+        double hitRate = totalRequests == 0 ? 0 : (hits * 100.0 / totalRequests);
+        double avgTimeMs = totalRequests == 0 ? 0 : (totalLookupTime / 1_000_000.0 / totalRequests);
 
-        system.addProduct("IPHONE15_256GB", 100);
+        return "Hit Rate: " + String.format("%.2f", hitRate) + "%, Avg Lookup Time: " + String.format("%.3f", avgTimeMs) + "ms";
+    }
 
-        System.out.println(system.checkStock("IPHONE15_256GB"));
+    public static void main(String[] args) throws InterruptedException {
+        HashTable dns = new HashTable(5);
 
-        System.out.println(system.purchaseItem("IPHONE15_256GB", 12345));
-        System.out.println(system.purchaseItem("IPHONE15_256GB", 67890));
+        System.out.println(dns.resolve("google.com"));
+        System.out.println(dns.resolve("google.com"));
 
-        for (int i = 0; i < 100; i++) {
-            system.purchaseItem("IPHONE15_256GB", i);
-        }
+        Thread.sleep(6000);
 
-        System.out.println(system.purchaseItem("IPHONE15_256GB", 99999));
+        System.out.println(dns.resolve("google.com"));
 
-        system.restock("IPHONE15_256GB", 5);
+        System.out.println(dns.getCacheStats());
     }
 }
