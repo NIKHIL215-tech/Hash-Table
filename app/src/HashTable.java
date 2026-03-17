@@ -1,86 +1,107 @@
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class HashTable {
 
-    private static final int N = 5; // n-gram size
+    static class Event {
+        String url;
+        String userId;
+        String source;
 
-    // n-gram -> set of document IDs
-    private HashMap<String, Set<String>> index;
+        Event(String url, String userId, String source) {
+            this.url = url;
+            this.userId = userId;
+            this.source = source;
+        }
+    }
 
-    // document -> list of n-grams
-    private HashMap<String, List<String>> documentNGrams;
+    private ConcurrentHashMap<String, Integer> pageViews;
+    private ConcurrentHashMap<String, Set<String>> uniqueVisitors;
+    private ConcurrentHashMap<String, Integer> trafficSourceCount;
 
     public HashTable() {
-        index = new HashMap<>();
-        documentNGrams = new HashMap<>();
+        pageViews = new ConcurrentHashMap<>();
+        uniqueVisitors = new ConcurrentHashMap<>();
+        trafficSourceCount = new ConcurrentHashMap<>();
     }
 
-    // Preprocess and store document
-    public void addDocument(String docId, String content) {
-        List<String> ngrams = generateNGrams(content);
-        documentNGrams.put(docId, ngrams);
+    public void processEvent(Event event) {
+        pageViews.merge(event.url, 1, Integer::sum);
 
-        for (String gram : ngrams) {
-            index.computeIfAbsent(gram, k -> new HashSet<>()).add(docId);
-        }
+        uniqueVisitors.computeIfAbsent(event.url, k -> ConcurrentHashMap.newKeySet())
+                .add(event.userId);
+
+        trafficSourceCount.merge(event.source, 1, Integer::sum);
     }
 
-    // Generate n-grams
-    private List<String> generateNGrams(String text) {
-        List<String> result = new ArrayList<>();
-        String[] words = text.toLowerCase().split("\\W+");
+    public List<Map.Entry<String, Integer>> getTopPages(int k) {
+        PriorityQueue<Map.Entry<String, Integer>> pq =
+                new PriorityQueue<>(Comparator.comparingInt(Map.Entry::getValue));
 
-        for (int i = 0; i <= words.length - N; i++) {
-            StringBuilder gram = new StringBuilder();
-            for (int j = 0; j < N; j++) {
-                gram.append(words[i + j]).append(" ");
+        for (Map.Entry<String, Integer> entry : pageViews.entrySet()) {
+            pq.offer(entry);
+            if (pq.size() > k) {
+                pq.poll();
             }
-            result.add(gram.toString().trim());
         }
+
+        List<Map.Entry<String, Integer>> result = new ArrayList<>();
+        while (!pq.isEmpty()) {
+            result.add(pq.poll());
+        }
+
+        Collections.reverse(result);
         return result;
     }
 
-    // Analyze a document for plagiarism
-    public void analyzeDocument(String docId, String content) {
-        List<String> ngrams = generateNGrams(content);
-        System.out.println("Extracted " + ngrams.size() + " n-grams");
+    public void getDashboard() {
+        List<Map.Entry<String, Integer>> topPages = getTopPages(10);
 
-        HashMap<String, Integer> matchCount = new HashMap<>();
+        System.out.println("Top Pages:");
+        int rank = 1;
+        for (Map.Entry<String, Integer> entry : topPages) {
+            String url = entry.getKey();
+            int views = entry.getValue();
+            int unique = uniqueVisitors.getOrDefault(url, Collections.emptySet()).size();
 
-        for (String gram : ngrams) {
-            if (index.containsKey(gram)) {
-                for (String matchedDoc : index.get(gram)) {
-                    matchCount.put(matchedDoc,
-                            matchCount.getOrDefault(matchedDoc, 0) + 1);
-                }
-            }
+            System.out.println(rank + ". " + url + " - " + views + " views (" + unique + " unique)");
+            rank++;
         }
 
-        for (Map.Entry<String, Integer> entry : matchCount.entrySet()) {
-            String otherDoc = entry.getKey();
-            int matches = entry.getValue();
-
-            int total = ngrams.size();
-            double similarity = (matches * 100.0) / total;
-
-            System.out.println("Found " + matches + " matching n-grams with \"" + otherDoc + "\"");
-            System.out.println("Similarity: " + String.format("%.2f", similarity) + "% "
-                    + (similarity > 50 ? "(PLAGIARISM DETECTED)" :
-                    similarity > 15 ? "(suspicious)" : "(low)"));
+        System.out.println("\nTraffic Sources:");
+        for (Map.Entry<String, Integer> entry : trafficSourceCount.entrySet()) {
+            System.out.println(entry.getKey() + " - " + entry.getValue());
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws InterruptedException {
         HashTable system = new HashTable();
 
-        String doc1 = "Artificial intelligence is transforming the world with advanced machine learning techniques";
-        String doc2 = "Machine learning techniques are transforming the world of artificial intelligence rapidly";
+        system.processEvent(new Event("/article/breaking-news", "user_123", "google"));
+        system.processEvent(new Event("/article/breaking-news", "user_456", "facebook"));
+        system.processEvent(new Event("/sports/championship", "user_789", "direct"));
+        system.processEvent(new Event("/article/breaking-news", "user_123", "google"));
+        system.processEvent(new Event("/sports/championship", "user_101", "google"));
 
-        system.addDocument("essay_092.txt", doc1);
-        system.addDocument("essay_089.txt", doc2);
+        for (int i = 0; i < 1000; i++) {
+            system.processEvent(new Event("/article/breaking-news", "user_" + i, "google"));
+        }
 
-        String newDoc = "Artificial intelligence is transforming the world with machine learning techniques rapidly";
+        Thread dashboardUpdater = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(5000);
+                    System.out.println("\n--- DASHBOARD UPDATE ---");
+                    system.getDashboard();
+                } catch (InterruptedException e) {
+                    break;
+                }
+            }
+        });
 
-        system.analyzeDocument("essay_123.txt", newDoc);
+        dashboardUpdater.setDaemon(true);
+        dashboardUpdater.start();
+
+        Thread.sleep(6000);
     }
 }
