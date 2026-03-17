@@ -2,136 +2,141 @@ import java.util.*;
 
 public class HashTable {
 
-    enum Status {
-        EMPTY, OCCUPIED, DELETED
-    }
+    static class Transaction {
+        int id;
+        int amount;
+        String merchant;
+        String account;
+        long time; // epoch milliseconds
 
-    class ParkingSpot {
-        String licensePlate;
-        long entryTime;
-        Status status;
-
-        ParkingSpot() {
-            this.status = Status.EMPTY;
+        Transaction(int id, int amount, String merchant, String account, long time) {
+            this.id = id;
+            this.amount = amount;
+            this.merchant = merchant;
+            this.account = account;
+            this.time = time;
         }
     }
 
-    private ParkingSpot[] table;
-    private int capacity;
-    private int size;
+    // -------------------- TWO SUM --------------------
+    public List<int[]> findTwoSum(List<Transaction> transactions, int target) {
+        Map<Integer, Transaction> map = new HashMap<>();
+        List<int[]> result = new ArrayList<>();
 
-    private int totalProbes = 0;
-    private int totalOperations = 0;
+        for (Transaction t : transactions) {
+            int complement = target - t.amount;
 
-    private Map<Integer, Integer> hourlyCount;
-
-    public HashTable(int capacity) {
-        this.capacity = capacity;
-        this.table = new ParkingSpot[capacity];
-        this.size = 0;
-        this.hourlyCount = new HashMap<>();
-
-        for (int i = 0; i < capacity; i++) {
-            table[i] = new ParkingSpot();
-        }
-    }
-
-    private int hash(String licensePlate) {
-        return Math.abs(licensePlate.hashCode()) % capacity;
-    }
-
-    public void parkVehicle(String licensePlate) {
-        int index = hash(licensePlate);
-        int probes = 0;
-
-        for (int i = 0; i < capacity; i++) {
-            int newIndex = (index + i) % capacity;
-
-            if (table[newIndex].status == Status.EMPTY || table[newIndex].status == Status.DELETED) {
-                table[newIndex].licensePlate = licensePlate;
-                table[newIndex].entryTime = System.currentTimeMillis();
-                table[newIndex].status = Status.OCCUPIED;
-
-                size++;
-                totalProbes += probes;
-                totalOperations++;
-
-                int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
-                hourlyCount.put(hour, hourlyCount.getOrDefault(hour, 0) + 1);
-
-                System.out.println("Assigned spot #" + newIndex + " (" + probes + " probes)");
-                return;
+            if (map.containsKey(complement)) {
+                result.add(new int[]{map.get(complement).id, t.id});
             }
-            probes++;
-        }
 
-        System.out.println("Parking Full");
+            map.put(t.amount, t);
+        }
+        return result;
     }
 
-    public void exitVehicle(String licensePlate) {
-        int index = hash(licensePlate);
+    // -------------------- TWO SUM WITH TIME WINDOW --------------------
+    public List<int[]> findTwoSumWithWindow(List<Transaction> transactions, int target, long windowMillis) {
+        List<int[]> result = new ArrayList<>();
+        Map<Integer, List<Transaction>> map = new HashMap<>();
 
-        for (int i = 0; i < capacity; i++) {
-            int newIndex = (index + i) % capacity;
+        for (Transaction t : transactions) {
+            int complement = target - t.amount;
 
-            if (table[newIndex].status == Status.EMPTY) break;
-
-            if (table[newIndex].status == Status.OCCUPIED &&
-                    table[newIndex].licensePlate.equals(licensePlate)) {
-
-                long durationMs = System.currentTimeMillis() - table[newIndex].entryTime;
-                double hours = durationMs / (1000.0 * 60 * 60);
-                double fee = hours * 5;
-
-                table[newIndex].status = Status.DELETED;
-                size--;
-
-                System.out.println("Spot #" + newIndex + " freed, Duration: "
-                        + String.format("%.2f", hours) + "h, Fee: $" + String.format("%.2f", fee));
-                return;
+            if (map.containsKey(complement)) {
+                for (Transaction prev : map.get(complement)) {
+                    if (Math.abs(t.time - prev.time) <= windowMillis) {
+                        result.add(new int[]{prev.id, t.id});
+                    }
+                }
             }
-        }
 
-        System.out.println("Vehicle not found");
+            map.computeIfAbsent(t.amount, k -> new ArrayList<>()).add(t);
+        }
+        return result;
     }
 
-    public int findNearestAvailableSpot() {
-        for (int i = 0; i < capacity; i++) {
-            if (table[i].status == Status.EMPTY || table[i].status == Status.DELETED) {
-                return i;
-            }
-        }
-        return -1;
+    // -------------------- K SUM --------------------
+    public List<List<Integer>> findKSum(List<Transaction> transactions, int k, int target) {
+        List<List<Integer>> result = new ArrayList<>();
+        backtrack(transactions, k, target, 0, new ArrayList<>(), result);
+        return result;
     }
 
-    public void getStatistics() {
-        double occupancy = (size * 100.0) / capacity;
-        double avgProbes = totalOperations == 0 ? 0 : (double) totalProbes / totalOperations;
+    private void backtrack(List<Transaction> transactions, int k, int target, int start,
+                           List<Integer> current, List<List<Integer>> result) {
 
-        int peakHour = -1, max = 0;
-        for (Map.Entry<Integer, Integer> e : hourlyCount.entrySet()) {
-            if (e.getValue() > max) {
-                max = e.getValue();
-                peakHour = e.getKey();
+        if (k == 0 && target == 0) {
+            result.add(new ArrayList<>(current));
+            return;
+        }
+
+        if (k == 0 || target < 0) return;
+
+        for (int i = start; i < transactions.size(); i++) {
+            Transaction t = transactions.get(i);
+
+            current.add(t.id);
+            backtrack(transactions, k - 1, target - t.amount, i + 1, current, result);
+            current.remove(current.size() - 1);
+        }
+    }
+
+    // -------------------- DUPLICATE DETECTION --------------------
+    public List<String> detectDuplicates(List<Transaction> transactions) {
+        Map<String, Set<String>> map = new HashMap<>();
+        List<String> result = new ArrayList<>();
+
+        for (Transaction t : transactions) {
+            String key = t.amount + "_" + t.merchant;
+
+            map.computeIfAbsent(key, k -> new HashSet<>()).add(t.account);
+        }
+
+        for (Map.Entry<String, Set<String>> entry : map.entrySet()) {
+            if (entry.getValue().size() > 1) {
+                result.add("Duplicate → " + entry.getKey() + " accounts: " + entry.getValue());
             }
         }
 
-        System.out.println("Occupancy: " + String.format("%.2f", occupancy) + "%");
-        System.out.println("Avg Probes: " + String.format("%.2f", avgProbes));
-        System.out.println("Peak Hour: " + peakHour + ":00 - " + (peakHour + 1) + ":00");
+        return result;
     }
 
-    public static void main(String[] args) throws InterruptedException {
-        HashTable parking = new HashTable(500);
+    // -------------------- MAIN --------------------
+    public static void main(String[] args) {
+        HashTable system = new HashTable();
 
-        parking.parkVehicle("ABC-1234");
-        parking.parkVehicle("ABC-1235");
-        parking.parkVehicle("XYZ-9999");
+        List<Transaction> transactions = new ArrayList<>();
 
-        Thread.sleep(2000);
+        long now = System.currentTimeMillis();
 
-        parking.exitVehicle("ABC-1234");
+        transactions.add(new Transaction(1, 500, "Store A", "acc1", now));
+        transactions.add(new Transaction(2, 300, "Store B", "acc2", now + 1000));
+        transactions.add(new Transaction(3, 200, "Store C", "acc3", now + 2000));
+        transactions.add(new Transaction(4, 500, "Store A", "acc4", now + 3000));
 
-        parking.getStatistics();
+        // Two Sum
+        List<int[]> pairs = system.findTwoSum(transactions, 500);
+        for (int[] p : pairs) {
+            System.out.println("TwoSum Pair: " + p[0] + ", " + p[1]);
+        }
+
+        // Two Sum with 1 hour window
+        List<int[]> windowPairs = system.findTwoSumWithWindow(transactions, 500, 3600_000);
+        for (int[] p : windowPairs) {
+            System.out.println("Window Pair: " + p[0] + ", " + p[1]);
+        }
+
+        // K Sum
+        List<List<Integer>> ksum = system.findKSum(transactions, 3, 1000);
+        for (List<Integer> list : ksum) {
+            System.out.println("KSum: " + list);
+        }
+
+        // Duplicate Detection
+        List<String> duplicates = system.detectDuplicates(transactions);
+        for (String d : duplicates) {
+            System.out.println(d);
+        }
     }
 }
