@@ -1,110 +1,86 @@
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
 public class HashTable {
 
-    class DNSEntry {
-        String domain;
-        String ipAddress;
-        long expiryTime;
+    private static final int N = 5; // n-gram size
 
-        DNSEntry(String domain, String ipAddress, long ttlSeconds) {
-            this.domain = domain;
-            this.ipAddress = ipAddress;
-            this.expiryTime = System.currentTimeMillis() + (ttlSeconds * 1000);
-        }
+    // n-gram -> set of document IDs
+    private HashMap<String, Set<String>> index;
 
-        boolean isExpired() {
-            return System.currentTimeMillis() > expiryTime;
+    // document -> list of n-grams
+    private HashMap<String, List<String>> documentNGrams;
+
+    public HashTable() {
+        index = new HashMap<>();
+        documentNGrams = new HashMap<>();
+    }
+
+    // Preprocess and store document
+    public void addDocument(String docId, String content) {
+        List<String> ngrams = generateNGrams(content);
+        documentNGrams.put(docId, ngrams);
+
+        for (String gram : ngrams) {
+            index.computeIfAbsent(gram, k -> new HashSet<>()).add(docId);
         }
     }
 
-    private ConcurrentHashMap<String, DNSEntry> cache;
-    private int maxSize;
+    // Generate n-grams
+    private List<String> generateNGrams(String text) {
+        List<String> result = new ArrayList<>();
+        String[] words = text.toLowerCase().split("\\W+");
 
-    private long hits = 0;
-    private long misses = 0;
-    private long totalLookupTime = 0;
-    private long totalRequests = 0;
-
-    public HashTable(int maxSize) {
-        this.maxSize = maxSize;
-
-        cache = new ConcurrentHashMap<String, DNSEntry>(16, 0.75f, 1) {
-            protected boolean removeEldestEntry(Map.Entry<String, DNSEntry> eldest) {
-                return size() > HashTable.this.maxSize;
+        for (int i = 0; i <= words.length - N; i++) {
+            StringBuilder gram = new StringBuilder();
+            for (int j = 0; j < N; j++) {
+                gram.append(words[i + j]).append(" ");
             }
-        };
-
-        startCleanupThread();
-    }
-
-    public String resolve(String domain) {
-        long start = System.nanoTime();
-        totalRequests++;
-
-        DNSEntry entry = cache.get(domain);
-
-        if (entry != null && !entry.isExpired()) {
-            hits++;
-            totalLookupTime += (System.nanoTime() - start);
-            return "Cache HIT → " + entry.ipAddress;
+            result.add(gram.toString().trim());
         }
-
-        if (entry != null && entry.isExpired()) {
-            cache.remove(domain);
-        }
-
-        misses++;
-
-        String ip = queryUpstreamDNS(domain);
-        cache.put(domain, new DNSEntry(domain, ip, 5));
-
-        totalLookupTime += (System.nanoTime() - start);
-        return "Cache MISS → " + ip;
+        return result;
     }
 
-    private String queryUpstreamDNS(String domain) {
-        return "192.168." + new Random().nextInt(255) + "." + new Random().nextInt(255);
-    }
+    // Analyze a document for plagiarism
+    public void analyzeDocument(String docId, String content) {
+        List<String> ngrams = generateNGrams(content);
+        System.out.println("Extracted " + ngrams.size() + " n-grams");
 
-    public void startCleanupThread() {
-        Thread cleaner = new Thread(() -> {
-            while (true) {
-                try {
-                    Thread.sleep(2000);
-                    for (String key : cache.keySet()) {
-                        DNSEntry entry = cache.get(key);
-                        if (entry != null && entry.isExpired()) {
-                            cache.remove(key);
-                        }
-                    }
-                } catch (InterruptedException e) {
-                    break;
+        HashMap<String, Integer> matchCount = new HashMap<>();
+
+        for (String gram : ngrams) {
+            if (index.containsKey(gram)) {
+                for (String matchedDoc : index.get(gram)) {
+                    matchCount.put(matchedDoc,
+                            matchCount.getOrDefault(matchedDoc, 0) + 1);
                 }
             }
-        });
-        cleaner.setDaemon(true);
-        cleaner.start();
+        }
+
+        for (Map.Entry<String, Integer> entry : matchCount.entrySet()) {
+            String otherDoc = entry.getKey();
+            int matches = entry.getValue();
+
+            int total = ngrams.size();
+            double similarity = (matches * 100.0) / total;
+
+            System.out.println("Found " + matches + " matching n-grams with \"" + otherDoc + "\"");
+            System.out.println("Similarity: " + String.format("%.2f", similarity) + "% "
+                    + (similarity > 50 ? "(PLAGIARISM DETECTED)" :
+                    similarity > 15 ? "(suspicious)" : "(low)"));
+        }
     }
 
-    public String getCacheStats() {
-        double hitRate = totalRequests == 0 ? 0 : (hits * 100.0 / totalRequests);
-        double avgTimeMs = totalRequests == 0 ? 0 : (totalLookupTime / 1_000_000.0 / totalRequests);
+    public static void main(String[] args) {
+        HashTable system = new HashTable();
 
-        return "Hit Rate: " + String.format("%.2f", hitRate) + "%, Avg Lookup Time: " + String.format("%.3f", avgTimeMs) + "ms";
-    }
+        String doc1 = "Artificial intelligence is transforming the world with advanced machine learning techniques";
+        String doc2 = "Machine learning techniques are transforming the world of artificial intelligence rapidly";
 
-    public static void main(String[] args) throws InterruptedException {
-        HashTable dns = new HashTable(5);
+        system.addDocument("essay_092.txt", doc1);
+        system.addDocument("essay_089.txt", doc2);
 
-        System.out.println(dns.resolve("google.com"));
-        System.out.println(dns.resolve("google.com"));
+        String newDoc = "Artificial intelligence is transforming the world with machine learning techniques rapidly";
 
-        Thread.sleep(6000);
-
-        System.out.println(dns.resolve("google.com"));
-
-        System.out.println(dns.getCacheStats());
+        system.analyzeDocument("essay_123.txt", newDoc);
     }
 }
