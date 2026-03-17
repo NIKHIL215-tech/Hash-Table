@@ -1,107 +1,96 @@
-import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class HashTable {
 
-    static class Event {
-        String url;
-        String userId;
-        String source;
+    class TokenBucket {
+        private int tokens;
+        private final int maxTokens;
+        private final double refillRatePerSec;
+        private long lastRefillTime;
 
-        Event(String url, String userId, String source) {
-            this.url = url;
-            this.userId = userId;
-            this.source = source;
+        public TokenBucket(int maxTokens, double refillRatePerSec) {
+            this.maxTokens = maxTokens;
+            this.refillRatePerSec = refillRatePerSec;
+            this.tokens = maxTokens;
+            this.lastRefillTime = System.currentTimeMillis();
+        }
+
+        private void refill() {
+            long now = System.currentTimeMillis();
+            double seconds = (now - lastRefillTime) / 1000.0;
+
+            int tokensToAdd = (int) (seconds * refillRatePerSec);
+            if (tokensToAdd > 0) {
+                tokens = Math.min(maxTokens, tokens + tokensToAdd);
+                lastRefillTime = now;
+            }
+        }
+
+        public synchronized boolean allowRequest() {
+            refill();
+            if (tokens > 0) {
+                tokens--;
+                return true;
+            }
+            return false;
+        }
+
+        public synchronized int getRemainingTokens() {
+            refill();
+            return tokens;
+        }
+
+        public synchronized long getRetryAfterSeconds() {
+            if (tokens > 0) return 0;
+            return (long) Math.ceil(1.0 / refillRatePerSec);
         }
     }
 
-    private ConcurrentHashMap<String, Integer> pageViews;
-    private ConcurrentHashMap<String, Set<String>> uniqueVisitors;
-    private ConcurrentHashMap<String, Integer> trafficSourceCount;
+    private ConcurrentHashMap<String, TokenBucket> clientBuckets;
+
+    private static final int MAX_REQUESTS = 1000;
+    private static final double REFILL_RATE = MAX_REQUESTS / 3600.0; // per second
 
     public HashTable() {
-        pageViews = new ConcurrentHashMap<>();
-        uniqueVisitors = new ConcurrentHashMap<>();
-        trafficSourceCount = new ConcurrentHashMap<>();
+        clientBuckets = new ConcurrentHashMap<>();
     }
 
-    public void processEvent(Event event) {
-        pageViews.merge(event.url, 1, Integer::sum);
-
-        uniqueVisitors.computeIfAbsent(event.url, k -> ConcurrentHashMap.newKeySet())
-                .add(event.userId);
-
-        trafficSourceCount.merge(event.source, 1, Integer::sum);
+    private TokenBucket getBucket(String clientId) {
+        return clientBuckets.computeIfAbsent(clientId,
+                k -> new TokenBucket(MAX_REQUESTS, REFILL_RATE));
     }
 
-    public List<Map.Entry<String, Integer>> getTopPages(int k) {
-        PriorityQueue<Map.Entry<String, Integer>> pq =
-                new PriorityQueue<>(Comparator.comparingInt(Map.Entry::getValue));
+    public String checkRateLimit(String clientId) {
+        TokenBucket bucket = getBucket(clientId);
 
-        for (Map.Entry<String, Integer> entry : pageViews.entrySet()) {
-            pq.offer(entry);
-            if (pq.size() > k) {
-                pq.poll();
-            }
-        }
-
-        List<Map.Entry<String, Integer>> result = new ArrayList<>();
-        while (!pq.isEmpty()) {
-            result.add(pq.poll());
-        }
-
-        Collections.reverse(result);
-        return result;
-    }
-
-    public void getDashboard() {
-        List<Map.Entry<String, Integer>> topPages = getTopPages(10);
-
-        System.out.println("Top Pages:");
-        int rank = 1;
-        for (Map.Entry<String, Integer> entry : topPages) {
-            String url = entry.getKey();
-            int views = entry.getValue();
-            int unique = uniqueVisitors.getOrDefault(url, Collections.emptySet()).size();
-
-            System.out.println(rank + ". " + url + " - " + views + " views (" + unique + " unique)");
-            rank++;
-        }
-
-        System.out.println("\nTraffic Sources:");
-        for (Map.Entry<String, Integer> entry : trafficSourceCount.entrySet()) {
-            System.out.println(entry.getKey() + " - " + entry.getValue());
+        if (bucket.allowRequest()) {
+            return "Allowed (" + bucket.getRemainingTokens() + " requests remaining)";
+        } else {
+            return "Denied (0 requests remaining, retry after "
+                    + bucket.getRetryAfterSeconds() + "s)";
         }
     }
 
-    public static void main(String[] args) throws InterruptedException {
-        HashTable system = new HashTable();
+    public String getRateLimitStatus(String clientId) {
+        TokenBucket bucket = getBucket(clientId);
+        int remaining = bucket.getRemainingTokens();
+        int used = MAX_REQUESTS - remaining;
+        long resetTime = (System.currentTimeMillis() / 1000) + bucket.getRetryAfterSeconds();
 
-        system.processEvent(new Event("/article/breaking-news", "user_123", "google"));
-        system.processEvent(new Event("/article/breaking-news", "user_456", "facebook"));
-        system.processEvent(new Event("/sports/championship", "user_789", "direct"));
-        system.processEvent(new Event("/article/breaking-news", "user_123", "google"));
-        system.processEvent(new Event("/sports/championship", "user_101", "google"));
+        return "{used: " + used +
+                ", limit: " + MAX_REQUESTS +
+                ", reset: " + resetTime + "}";
+    }
 
-        for (int i = 0; i < 1000; i++) {
-            system.processEvent(new Event("/article/breaking-news", "user_" + i, "google"));
+    public static void main(String[] args) {
+        HashTable limiter = new HashTable();
+
+        String client = "abc123";
+
+        for (int i = 0; i < 1005; i++) {
+            System.out.println(limiter.checkRateLimit(client));
         }
 
-        Thread dashboardUpdater = new Thread(() -> {
-            while (true) {
-                try {
-                    Thread.sleep(5000);
-                    System.out.println("\n--- DASHBOARD UPDATE ---");
-                    system.getDashboard();
-                } catch (InterruptedException e) {
-                    break;
-                }
-            }
-        });
-
-        dashboardUpdater.setDaemon(true);
-        dashboardUpdater.start();
-
-        Thread.sleep(6000);
+        System.out.println(limiter.getRateLimitStatus(client));
     }
 }
