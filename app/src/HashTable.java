@@ -3,69 +3,71 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class HashTable {
 
-    private ConcurrentHashMap<String, Integer> usernameMap;
-    private ConcurrentHashMap<String, Integer> attemptCount;
+    private ConcurrentHashMap<String, Integer> inventory;
+    private ConcurrentHashMap<String, Queue<Integer>> waitingList;
 
     public HashTable() {
-        usernameMap = new ConcurrentHashMap<>();
-        attemptCount = new ConcurrentHashMap<>();
+        inventory = new ConcurrentHashMap<>();
+        waitingList = new ConcurrentHashMap<>();
     }
 
-    public boolean checkAvailability(String username) {
-        attemptCount.merge(username, 1, Integer::sum);
-        return !usernameMap.containsKey(username);
+    public void addProduct(String productId, int stock) {
+        inventory.put(productId, stock);
+        waitingList.put(productId, new LinkedList<>());
     }
 
-    public void registerUsername(String username, int userId) {
-        usernameMap.put(username, userId);
+    public int checkStock(String productId) {
+        return inventory.getOrDefault(productId, 0);
     }
 
-    public List<String> suggestAlternatives(String username) {
-        List<String> suggestions = new ArrayList<>();
+    public String purchaseItem(String productId, int userId) {
+        synchronized (productId.intern()) {
+            int stock = inventory.getOrDefault(productId, 0);
 
-        for (int i = 1; i <= 5; i++) {
-            String candidate = username + i;
-            if (!usernameMap.containsKey(candidate)) {
-                suggestions.add(candidate);
+            if (stock > 0) {
+                inventory.put(productId, stock - 1);
+                return "Success, " + (stock - 1) + " units remaining";
+            } else {
+                Queue<Integer> queue = waitingList.get(productId);
+                queue.add(userId);
+                return "Added to waiting list, position #" + queue.size();
             }
         }
-
-        String modified = username.replace("_", ".");
-        if (!usernameMap.containsKey(modified)) {
-            suggestions.add(modified);
-        }
-
-        return suggestions;
     }
 
-    public String getMostAttempted() {
-        String maxUser = null;
-        int maxCount = 0;
+    public void restock(String productId, int quantity) {
+        synchronized (productId.intern()) {
+            int stock = inventory.getOrDefault(productId, 0);
+            stock += quantity;
 
-        for (Map.Entry<String, Integer> entry : attemptCount.entrySet()) {
-            if (entry.getValue() > maxCount) {
-                maxCount = entry.getValue();
-                maxUser = entry.getKey();
+            Queue<Integer> queue = waitingList.get(productId);
+
+            while (stock > 0 && !queue.isEmpty()) {
+                int userId = queue.poll();
+                stock--;
+                System.out.println("Allocated to waiting user: " + userId);
             }
+
+            inventory.put(productId, stock);
         }
-        return maxUser;
     }
 
     public static void main(String[] args) {
         HashTable system = new HashTable();
 
-        system.registerUsername("john_doe", 1);
-        system.registerUsername("admin", 2);
+        system.addProduct("IPHONE15_256GB", 100);
 
-        System.out.println(system.checkAvailability("john_doe"));
-        System.out.println(system.checkAvailability("jane_smith"));
+        System.out.println(system.checkStock("IPHONE15_256GB"));
 
-        System.out.println(system.suggestAlternatives("john_doe"));
+        System.out.println(system.purchaseItem("IPHONE15_256GB", 12345));
+        System.out.println(system.purchaseItem("IPHONE15_256GB", 67890));
 
-        for (int i = 0; i < 10543; i++) {
-            system.checkAvailability("admin");
+        for (int i = 0; i < 100; i++) {
+            system.purchaseItem("IPHONE15_256GB", i);
         }
 
-        System.out.println(system.getMostAttempted());
+        System.out.println(system.purchaseItem("IPHONE15_256GB", 99999));
+
+        system.restock("IPHONE15_256GB", 5);
     }
 }
