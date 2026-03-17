@@ -1,96 +1,123 @@
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.*;
 
 public class HashTable {
 
-    class TokenBucket {
-        private int tokens;
-        private final int maxTokens;
-        private final double refillRatePerSec;
-        private long lastRefillTime;
-
-        public TokenBucket(int maxTokens, double refillRatePerSec) {
-            this.maxTokens = maxTokens;
-            this.refillRatePerSec = refillRatePerSec;
-            this.tokens = maxTokens;
-            this.lastRefillTime = System.currentTimeMillis();
-        }
-
-        private void refill() {
-            long now = System.currentTimeMillis();
-            double seconds = (now - lastRefillTime) / 1000.0;
-
-            int tokensToAdd = (int) (seconds * refillRatePerSec);
-            if (tokensToAdd > 0) {
-                tokens = Math.min(maxTokens, tokens + tokensToAdd);
-                lastRefillTime = now;
-            }
-        }
-
-        public synchronized boolean allowRequest() {
-            refill();
-            if (tokens > 0) {
-                tokens--;
-                return true;
-            }
-            return false;
-        }
-
-        public synchronized int getRemainingTokens() {
-            refill();
-            return tokens;
-        }
-
-        public synchronized long getRetryAfterSeconds() {
-            if (tokens > 0) return 0;
-            return (long) Math.ceil(1.0 / refillRatePerSec);
-        }
+    class TrieNode {
+        Map<Character, TrieNode> children = new HashMap<>();
+        Map<String, Integer> prefixMap = new HashMap<>();
+        boolean isEnd;
     }
 
-    private ConcurrentHashMap<String, TokenBucket> clientBuckets;
-
-    private static final int MAX_REQUESTS = 1000;
-    private static final double REFILL_RATE = MAX_REQUESTS / 3600.0; // per second
+    private TrieNode root;
+    private HashMap<String, Integer> frequencyMap;
 
     public HashTable() {
-        clientBuckets = new ConcurrentHashMap<>();
+        root = new TrieNode();
+        frequencyMap = new HashMap<>();
     }
 
-    private TokenBucket getBucket(String clientId) {
-        return clientBuckets.computeIfAbsent(clientId,
-                k -> new TokenBucket(MAX_REQUESTS, REFILL_RATE));
-    }
+    public void insert(String query) {
+        frequencyMap.put(query, frequencyMap.getOrDefault(query, 0) + 1);
+        int freq = frequencyMap.get(query);
 
-    public String checkRateLimit(String clientId) {
-        TokenBucket bucket = getBucket(clientId);
+        TrieNode node = root;
+        for (char c : query.toCharArray()) {
+            node.children.putIfAbsent(c, new TrieNode());
+            node = node.children.get(c);
 
-        if (bucket.allowRequest()) {
-            return "Allowed (" + bucket.getRemainingTokens() + " requests remaining)";
-        } else {
-            return "Denied (0 requests remaining, retry after "
-                    + bucket.getRetryAfterSeconds() + "s)";
+            node.prefixMap.put(query, freq);
         }
+        node.isEnd = true;
     }
 
-    public String getRateLimitStatus(String clientId) {
-        TokenBucket bucket = getBucket(clientId);
-        int remaining = bucket.getRemainingTokens();
-        int used = MAX_REQUESTS - remaining;
-        long resetTime = (System.currentTimeMillis() / 1000) + bucket.getRetryAfterSeconds();
+    public List<Map.Entry<String, Integer>> search(String prefix) {
+        TrieNode node = root;
 
-        return "{used: " + used +
-                ", limit: " + MAX_REQUESTS +
-                ", reset: " + resetTime + "}";
+        for (char c : prefix.toCharArray()) {
+            if (!node.children.containsKey(c)) {
+                return new ArrayList<>();
+            }
+            node = node.children.get(c);
+        }
+
+        PriorityQueue<Map.Entry<String, Integer>> pq =
+                new PriorityQueue<>(Comparator.comparingInt(Map.Entry::getValue));
+
+        for (Map.Entry<String, Integer> entry : node.prefixMap.entrySet()) {
+            pq.offer(entry);
+            if (pq.size() > 10) {
+                pq.poll();
+            }
+        }
+
+        List<Map.Entry<String, Integer>> result = new ArrayList<>();
+        while (!pq.isEmpty()) {
+            result.add(pq.poll());
+        }
+
+        Collections.reverse(result);
+        return result;
+    }
+
+    public void updateFrequency(String query) {
+        insert(query);
+    }
+
+    public List<String> suggestWithTypo(String prefix) {
+        List<String> results = new ArrayList<>();
+
+        if (search(prefix).size() > 0) {
+            for (Map.Entry<String, Integer> e : search(prefix)) {
+                results.add(e.getKey());
+            }
+            return results;
+        }
+
+        for (String query : frequencyMap.keySet()) {
+            if (isCloseMatch(prefix, query)) {
+                results.add(query);
+            }
+        }
+
+        return results;
+    }
+
+    private boolean isCloseMatch(String a, String b) {
+        int diff = Math.abs(a.length() - b.length());
+        if (diff > 2) return false;
+
+        int mismatches = 0;
+        for (int i = 0; i < Math.min(a.length(), b.length()); i++) {
+            if (a.charAt(i) != b.charAt(i)) mismatches++;
+            if (mismatches > 2) return false;
+        }
+        return true;
     }
 
     public static void main(String[] args) {
-        HashTable limiter = new HashTable();
+        HashTable system = new HashTable();
 
-        String client = "abc123";
+        system.insert("java tutorial");
+        system.insert("javascript");
+        system.insert("java download");
+        system.insert("java tutorial");
+        system.insert("java tutorial");
+        system.insert("java 21 features");
 
-        for (int i = 0; i < 1005; i++) {
-            System.out.println(limiter.checkRateLimit(client));
+        List<Map.Entry<String, Integer>> results = system.search("jav");
+
+        int rank = 1;
+        for (Map.Entry<String, Integer> entry : results) {
+            System.out.println(rank + ". " + entry.getKey() + " (" + entry.getValue() + " searches)");
+            rank++;
         }
 
-        System.out.println(limiter.getRateLimitStatus(client));
+        system.updateFrequency("java 21 features");
+        system.updateFrequency("java 21 features");
+
+        System.out.println("\nTypo Suggestions:");
+        for (String s : system.suggestWithTypo("jva")) {
+            System.out.println(s);
+        }
     }
 }
